@@ -227,6 +227,20 @@ async function processScenarioView (scenario, variantOrScenarioLabelSafe, scenar
     error = e;
   });
 
+  //  --- ON BEFORE SCREENSHOT SCRIPT ---
+  let onBeforeScreenshot;
+  const onBeforeScreenshotScript = scenario.onBeforeScreenshotScript || config.onBeforeScreenshotScript;
+  if (onBeforeScreenshotScript) {
+    const onBeforeScreenshotScriptPath = path.resolve(engineScriptsPath, onBeforeScreenshotScript);
+    if (fs.existsSync(onBeforeScreenshotScriptPath)) {
+      onBeforeScreenshot = async (selector) => {
+        await require(onBeforeScreenshotScriptPath)(selector, page, scenario, viewport, config.isReference, browser, config);
+      };
+    } else {
+      console.warn('WARNING: script not found: ' + onBeforeScreenshotScriptPath);
+    }
+  }
+
   let compareConfig;
   if (!error) {
     try {
@@ -239,7 +253,8 @@ async function processScenarioView (scenario, variantOrScenarioLabelSafe, scenar
         scenarioLabelSafe,
         config,
         result.backstopSelectorsExp,
-        result.backstopSelectorsExpMap
+        result.backstopSelectorsExpMap,
+        onBeforeScreenshot
       );
     } catch (e) {
       error = e;
@@ -272,7 +287,8 @@ async function delegateSelectors (
   scenarioLabelSafe,
   config,
   selectors,
-  selectorMap
+  selectorMap,
+  onBeforeScreenshot
 ) {
   let compareConfig = { testPairs: [] };
   let captureDocument = false;
@@ -299,14 +315,14 @@ async function delegateSelectors (
   });
 
   if (captureDocument) {
-    captureJobs.push(function () { return captureScreenshot(page, browser, captureDocument, selectorMap, config, [], viewport); });
+    captureJobs.push(function () { return captureScreenshot(page, browser, captureDocument, selectorMap, config, [], viewport, onBeforeScreenshot); });
   }
   // TODO: push captureViewport into captureList (instead of calling captureScreenshot()) to improve perf.
   if (captureViewport) {
-    captureJobs.push(function () { return captureScreenshot(page, browser, captureViewport, selectorMap, config, [], viewport); });
+    captureJobs.push(function () { return captureScreenshot(page, browser, captureViewport, selectorMap, config, [], viewport, onBeforeScreenshot); });
   }
   if (captureList.length) {
-    captureJobs.push(function () { return captureScreenshot(page, browser, null, selectorMap, config, captureList, viewport); });
+    captureJobs.push(function () { return captureScreenshot(page, browser, null, selectorMap, config, captureList, viewport, onBeforeScreenshot); });
   }
 
   return new Promise(function (resolve, reject) {
@@ -339,12 +355,13 @@ async function delegateSelectors (
   }).then(_ => compareConfig);
 }
 
-async function captureScreenshot (page, browser, selector, selectorMap, config, selectors, viewport) {
+async function captureScreenshot (page, browser, selector, selectorMap, config, selectors, viewport, onBeforeScreenshot) {
   let filePath;
   let fullPage = (selector === NOCLIP_SELECTOR || selector === DOCUMENT_SELECTOR);
   if (selector) {
     filePath = selectorMap[selector].filePath;
     ensureDirectoryPath(filePath);
+    // await onBeforeScreenshot(selector);
 
     try {
       await page.screenshot({
@@ -358,6 +375,8 @@ async function captureScreenshot (page, browser, selector, selectorMap, config, 
   } else {
     // OTHER-SELECTOR screenshot
     const selectorShot = async (s, path) => {
+      console.log(`selectorShot ${s}`);
+      // await onBeforeScreenshot(s);
       const el = await page.$(s);
       if (el) {
         const box = await el.boundingBox();
@@ -387,21 +406,16 @@ async function captureScreenshot (page, browser, selector, selectorMap, config, 
       }
     };
 
-    const selectorsShot = async () => {
-      return Promise.all(
-        selectors.map(async selector => {
-          filePath = selectorMap[selector].filePath;
-          ensureDirectoryPath(filePath);
-          try {
-            await selectorShot(selector, filePath);
-          } catch (e) {
-            console.log(chalk.red(`Error capturing Element ${selector}`), e);
-            return fs.copy(config.env.backstop + ERROR_SELECTOR_PATH, filePath);
-          }
-        })
-      );
-    };
-    await selectorsShot();
+    for (const selector of selectors) {
+      filePath = selectorMap[selector].filePath;
+      ensureDirectoryPath(filePath);
+      try {
+        await selectorShot(selector, filePath);
+      } catch (e) {
+        console.log(chalk.red(`Error capturing Element ${selector}`), e);
+        fs.copy(config.env.backstop + ERROR_SELECTOR_PATH, filePath);
+      }
+    }
   }
 }
 
